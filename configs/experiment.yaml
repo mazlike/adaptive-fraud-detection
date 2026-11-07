@@ -1,0 +1,105 @@
+# Unified experiment configuration for adaptive-fraud-detection.
+# Keys are in English. Comments explain purpose and allowed values.
+# One entry point: python -m afd.run --config configs/experiment.yaml
+
+experiment:
+  name: "stage0_smoke_test"
+  seed: 42
+  output_dir: "results/stage0_smoke_test"
+
+# ----------------------------------------------------------------------
+# Dataset
+# Real sources: "ieee-cis" (TransactionDT) or "creditcard" (Time).
+# Chronological order only, no shuffling. Document fraud rate & preprocessing.
+# ----------------------------------------------------------------------
+dataset:
+  source: "synthetic"          # synthetic | ieee-cis | creditcard
+  path: null                   # path to CSV; required for real sources
+  time_column: "TransactionDT" # or "Time" for creditcard
+  target_column: "isFraud"
+  # Synthetic generator settings
+  n_samples: 100000
+  n_features: 30
+  informative_features: 10
+  fraud_rate: 0.01             # 0.001 - 0.02 (0.1% - 2%)
+  drift:
+    type: "sudden"             # none | sudden | gradual
+    t0: 50000                  # drift start index (samples)
+    width: 5000                # interpolation window for gradual drift
+    interpolation: "linear"    # linear | sigmoid (used when type == gradual)
+    seed: 7
+
+# ----------------------------------------------------------------------
+# Prequential (test-then-train) simulation
+# ----------------------------------------------------------------------
+simulator:
+  batch_size: 1000
+  warmup_batches: 10           # batches used for initial training before evaluation
+  adaptation_enabled: true     # false for a static baseline after warm-up
+
+# ----------------------------------------------------------------------
+# Model & imbalance handling
+# ----------------------------------------------------------------------
+model:
+  type: "lightgbm"             # lightgbm | logistic
+  class_weight: "balanced"     # none | balanced | manual
+  scale_pos_weight: null       # LightGBM: weight of positive class (e.g. 99.0)
+  cost_fp: 1.0                 # cost of a false positive
+  cost_fn: 10.0                # cost of a false negative
+  n_estimators: 100
+  learning_rate: 0.05
+  max_depth: -1
+  subsample: 0.8
+  colsample_bytree: 0.8
+  random_state: 42
+
+# ----------------------------------------------------------------------
+# Drift detector: ADWIN (river) + drift-triggered retraining
+# ----------------------------------------------------------------------
+detector:
+  enabled: true
+  type: "adwin"                # adwin | page_hinkley | off
+  delta: 0.002                 # ADWIN delta bound
+  clock: 32                    # ADWIN clock parameter
+  max_window: null             # max ADWIN window size (null = default)
+  input_signal: "error"        # error | score  (per-sample error or model score)
+  retrain_window: 5000         # samples used for retraining after an alarm
+  cooldown_batches: 5          # batches suppressed after an alarm (no new retrain)
+  warmup_batches: 10           # batches before detector is armed
+
+# ----------------------------------------------------------------------
+# Active learning loop
+# ----------------------------------------------------------------------
+active_learning:
+  enabled: true
+  budget_fraction: 0.05        # fraction of each batch sent for labeling (0.01 / 0.05 / 0.10)
+  total_budget: null           # optional hard cap on total number of labels
+  strategy: "rare_aware"       # random | uncertainty | rare_aware
+  uncertainty_measure: "margin"  # margin | least_confidence | entropy
+  rare_aware:
+    # Share of the batch budget reserved for top-p(fraud) samples (exploitation of rare class),
+    # the remaining share goes to uncertainty sampling (exploration).
+    fraud_score_share: 0.5
+    exploration_share: 0.5
+
+# ----------------------------------------------------------------------
+# Evaluation
+# ----------------------------------------------------------------------
+evaluation:
+  metrics:
+    - pr_auc
+    - pr_auc_rolling
+    - f1
+    - recall
+    - labels_spent
+    - recovery_time
+    - detection_delay
+    - false_alarms
+  pr_auc_window: 50            # rolling window size in batches
+  f1_threshold: 0.5
+  recovery_level: 0.95         # PR-AUC must return to X% of pre-drift level
+
+# ----------------------------------------------------------------------
+# Reproducibility
+# ----------------------------------------------------------------------
+seeds: [42, 123, 2026]

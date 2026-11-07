@@ -1,0 +1,13 @@
+# Pinned requirements for adaptive-fraud-detection (Python >= 3.11).
+# Versions below were verified with `pip install -e .` in this environment
+# (Python 3.13.15, Windows). Regenerate with `pip freeze` after any change.
+numpy==1.26.4
+pandas==2.3.3
+scikit-learn==1.9.1
+lightgbm==4.7.0
+river==0.23.0
+PyYAML==6.0.3
+typing_extensions==4.15.0
+matplotlib==3.11.2
+kagglehub==1.0.3
+pytest==9.2.0
