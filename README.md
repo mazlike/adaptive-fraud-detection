@@ -47,6 +47,9 @@ adaptive-fraud-detection/
 │   ├── test_config_loads.py       # стадия 0: конфиг + точка входа
 │   ├── test_data.py               # стадия 1: генератор, дрейф в t0, без shuffling
 │   └── test_simulator.py          # стадия 2: порядок test-then-train, бюджет не превышается, нет утечек
+├── scripts/
+│   ├── plot_results.py             # графики batch-level PR-AUC и стоимости разметки
+│   └── analyze_sweep.py            # mean±std, ranking и paired Wilcoxon
 └── docs/
     └── stage0_literature_and_metrics.md  # обзор методов, выбор метрик, допущения
 ```
@@ -100,6 +103,9 @@ dataset:
 - `active_learning` — `enabled`, `budget_fraction` (0.01 / 0.05 / 0.10), `total_budget`, `strategy` (`random` / `uncertainty` / `rare_aware`), `uncertainty_measure`, параметры `rare_aware`
 - `evaluation` — метрики, окно rolling PR-AUC, порог F1, уровень восстановления
 - `seeds` — список сидов для многократных запусков
+- `dataset.seed` — базовый seed synthetic stream; фактический seed потока равен
+  `dataset.seed + experiment seed`, поэтому варианты при одном seed используют
+  одинаковый stream, а разные seeds дают независимые paired streams.
 
 ## Прогон по стадиям
 
@@ -110,10 +116,10 @@ dataset:
 | **0** | Обзор методов, метрики, структура репозитория, конфиг, точка входа | ✅ done | `pytest -q`, `python -m afd.run --config configs/experiment.yaml` |
 | **1** | Загрузка данных + синтетический генератор дрейфа + тесты | ✅ done | `pytest tests/test_data.py -q` |
 | **2** | Stream simulator, prequential test-then-train, baseline, баланс классов + тесты | ✅ done | `pytest tests/test_simulator.py -q` |
-| **3** | ADWIN детектор + дрейф-триггерное переобучение | planned | `pytest` (добавить `tests/test_detector.py`) |
-| **4** | Цикл активного обучения, 3 стратегии, бюджет | planned | `pytest` (добавить `tests/test_active_learning.py`) |
-| **5** | Конфиг-конвейер, CLI, раннер экспериментов, скрипты графиков | planned | `python -m afd.run --config configs/experiment.yaml` (полный прогон) |
-| **6** | Таблицы, фигуры, выводы по H1–H5, ограничения, будущая работа | planned | анализ в `results/` и `docs/` |
+| **3** | ADWIN детектор + дрейф-триггерное переобучение | ✅ done | `pytest tests/test_detector.py -q` |
+| **4** | Цикл активного обучения, 3 стратегии, бюджет | ✅ done | `pytest tests/test_active_learning.py -q` |
+| **5** | Конфиг-конвейер, CLI, раннер экспериментов, скрипты графиков | ✅ done | `python -m afd.run --config configs/experiment.yaml` (полный прогон) |
+| **6** | Таблицы, фигуры, выводы по H1–H5, ограничения, будущая работа | ✅ ready | `python scripts/analyze_sweep.py --results results/stage6_sweep` |
 
 ## Модульное тестирование
 
@@ -122,6 +128,8 @@ dataset:
 pytest -q                     # все тесты
 pytest tests/test_data.py -q  # только стадия 1
 pytest tests/test_simulator.py -q  # только стадия 2
+pytest tests/test_detector.py -q  # только стадия 3
+pytest tests/test_active_learning.py -q  # только стадия 4
 ```
 
 Ключевые инварианты, которые покрыты тестами:
@@ -130,6 +138,17 @@ pytest tests/test_simulator.py -q  # только стадия 2
 - Бюджет разметки никогда не превышается (ни доля в батче, ни общий лимит `total_budget`).
 - Нет утечки будущего: модель обучается только на приобретённых метках из прошлого.
 - Static baseline можно запустить с отключённым post-warm-up обновлением (`adaptation_enabled=False`).
+- ADWIN получает `error` только для приобретённых меток, а `score` — для всех наблюдений; retraining использует только recent labeled window.
+- Active learning поддерживает стратегии `random`, `uncertainty` (`margin` / `least_confidence` / `entropy`) и `rare_aware`; при отсутствии внешнего selector симулятор использует встроенный strategy-driven selector.
+- Stage 5 сохраняет исходный конфиг, метрики по seed (`metrics_by_seed.csv/json`) и batch-level результаты (`batch_metrics.csv`) в `experiment.output_dir`; оптимальный режим выбирается только после фактического сравнения этих результатов.
+- График результатов: `python scripts/plot_results.py --results results/stage5_pipeline`.
+- Полный factorial sweep: `python -m afd.run --config configs/experiment.yaml --sweep`.
+- Анализ sweep: `python scripts/analyze_sweep.py --results results/stage5_pipeline`.
+- В baseline variant active learning и detector отключены; в `adwin` active learning отключён, а в `adwin_al` включены оба механизма. Это предотвращает смешение эффектов при проверке H1–H4.
+- Все comparisons в paired Wilcoxon используют одинаковые seeds и один и тот же drift/budget/variant.
+- Для `source: creditcard` необходимо явно указать локальный CSV path и
+  соответствующие `time_column`/`target_column` (обычно `Time`/`Class`);
+  автоматическая загрузка доступна только для IEEE-CIS через KaggleHub.
 - Дрейф вставлен ровно в позицию `t0` (ground truth хранится в `drift_points`).
 - Генерация детерминирована при фиксированном сиде.
 
@@ -156,7 +175,7 @@ pytest==9.2.0
 - Python 3.11+ (окружение проекта: 3.13; код совместим с 3.11 через `from __future__ import annotations`).
 - Реальные данные через kagglehub требуют аутентификации Kaggle; при её отсутствии используется синтетический генератор.
 - scikit-learn 1.9.1 / LightGBM 4.7.0 — версии из текущего индекса пакетов; при переносе окружения перепроверить совместимость.
-- river 0.23.0: API `river.drift.ADWIN` уточняется на стадии 3 при реализации детектора.
+- river 0.23.0: ADWIN создаётся через `ADWIN(delta=..., clock=...)`; smoke-тест импорта и API пройден.
 - Глухие места в литературе помечены `[флаг]` в `docs/stage0_literature_and_metrics.md` — требуют верификации перед финальным отчётом.
 
 ## Лицензия

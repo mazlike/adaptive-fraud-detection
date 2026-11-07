@@ -107,7 +107,7 @@ def recovery_time(
     """Batches until PR-AUC returns to ``level`` of its pre-drift value.
 
     The pre-drift reference is the mean PR-AUC over batches before ``drift_batch``.
-    Returns the index of the first batch at/after ``drift_batch`` where
+    Returns the number of post-drift batches until the first batch where
     ``pr_auc >= level * pre_drift``, or None if never recovered.
     """
     series = np.asarray(pr_auc_series, dtype=float)
@@ -120,7 +120,7 @@ def recovery_time(
     post = series[drift_batch:]
     for i, v in enumerate(post):
         if not np.isnan(v) and v >= target:
-            return drift_batch + i
+            return i
     return None
 
 

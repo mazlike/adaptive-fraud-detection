@@ -199,20 +199,21 @@ def load_real_dataset(
 
     For ``source="ieee-cis"`` this prefers
     ``kagglehub.competition_download('ieee-fraud-detection')`` and falls back to
-    ``path`` if provided. The frame is sorted by ``time_column`` ascending and
-    never shuffled. Identifier columns are dropped; all remaining columns are
-    returned as ``X`` (preprocessing is performed later, on past data only).
+    ``path`` if provided. For ``source="creditcard"``, ``path`` is required.
+    The frame is sorted by ``time_column`` ascending and never shuffled.
+    Identifier columns are dropped; all remaining columns are returned as ``X``
+    (preprocessing is performed later, on past data only).
 
     Args:
         path: local CSV path (fallback when kagglehub is unavailable).
-        source: dataset name, currently only "ieee-cis".
+        source: dataset name: "ieee-cis" or "creditcard".
         time_column: chronological time axis column.
         target_column: target column name.
 
     Returns:
         (X, y) with X sorted by time and y the target.
     """
-    if source != "ieee-cis":
+    if source not in {"ieee-cis", "creditcard"}:
         raise ValueError(f"Unsupported real dataset source: {source!r}")
 
     csv_path: Path | None = None
@@ -220,7 +221,7 @@ def load_real_dataset(
         csv_path = Path(path)
         if not csv_path.exists():
             raise FileNotFoundError(f"Dataset CSV not found: {csv_path}")
-    else:
+    elif source == "ieee-cis":
         csv_path = _kagglehub_ieee_path()
         if csv_path is None:
             raise RuntimeError(
@@ -228,6 +229,10 @@ def load_real_dataset(
                 "train_transaction.csv, or configure Kaggle credentials so "
                 "kagglehub.competition_download('ieee-fraud-detection') works."
             )
+    else:
+        raise RuntimeError(
+            "Credit Card Fraud data requires `dataset.path` to a local CSV file."
+        )
 
     df = pd.read_csv(csv_path)
 

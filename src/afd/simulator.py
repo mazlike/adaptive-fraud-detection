@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from afd.active_learning import LabelingBudget, select_samples
+from afd.detector import DriftRetrainer
 from afd.metrics import f1_at_threshold, pr_auc, recall_at_budget
 
 
@@ -35,7 +36,7 @@ class BatchResult:
 
 
 LabelSelector = Callable[
-    [np.ndarray, np.ndarray, int, dict],
+    [np.ndarray, int, dict],
     np.ndarray,
 ]
 
@@ -79,6 +80,7 @@ class StreamSimulator:
         strategy_context: dict | None = None,
         seed: int = 42,
         adaptation_enabled: bool = True,
+        drift_retrainer: DriftRetrainer | None = None,
     ) -> None:
         self.model = model
         self.batch_size = batch_size
@@ -89,6 +91,9 @@ class StreamSimulator:
         self.strategy_context = strategy_context or {}
         self.seed = seed
         self.adaptation_enabled = adaptation_enabled
+        self.drift_retrainer = drift_retrainer
+        self.drift_alarms = []
+        self.retrain_batches: list[int] = []
         self.rng = np.random.default_rng(seed)
         self.labels_spent_total = 0
         self.warmup_labels_total = 0
@@ -106,6 +111,29 @@ class StreamSimulator:
     def labels_allowed(self, n_in_batch: int) -> int:
         """Max labels we may acquire this batch without exceeding the total cap."""
         return self._ensure_budget().allowance(n_in_batch)
+
+    def _default_select_labels(
+        self,
+        probabilities: np.ndarray,
+        n_to_select: int,
+        context: dict,
+    ) -> np.ndarray:
+        """Default active-learning selector driven by ``strategy_context``."""
+        strategy = context.get("strategy", "uncertainty")
+        rare = context.get("rare_aware", {})
+        fraud_score_share = float(rare.get("fraud_score_share", context.get("fraud_score_share", 0.5)))
+        exploration_share = float(rare.get("exploration_share", context.get("exploration_share", 0.5)))
+        uncertainty_measure = context.get("uncertainty_measure", "margin")
+        return select_samples(
+            scores=probabilities,
+            probabilities=probabilities,
+            n_to_select=n_to_select,
+            strategy=strategy,
+            fraud_score_share=fraud_score_share,
+            exploration_share=exploration_share,
+            uncertainty_measure=uncertainty_measure,
+            rng=self.rng,
+        )
 
     # ------------------------------------------------------------------ #
     # main loop
@@ -128,9 +156,13 @@ class StreamSimulator:
         self.labels_spent_total = 0
         self.warmup_labels_total = 0
         self._budget = None
+        self.drift_alarms = []
+        self.retrain_batches = []
 
         warmup_X_parts: list[np.ndarray] = []
         warmup_y_parts: list[np.ndarray] = []
+        labeled_X_parts: list[np.ndarray] = []
+        labeled_y_parts: list[np.ndarray] = []
 
         for bi in range(n_batches):
             start = bi * self.batch_size
@@ -161,9 +193,11 @@ class StreamSimulator:
 
                 # ---- 3. select labels within budget -------------------
                 n_allowed = self.labels_allowed(yb.shape[0])
-                if n_allowed > 0 and self.select_labels is not None:
+                idx = np.array([], dtype=int)
+                if n_allowed > 0:
                     ctx = dict(self.strategy_context)
-                    idx = self.select_labels(y_score, n_allowed, ctx)
+                    selector = self.select_labels or self._default_select_labels
+                    idx = selector(y_score, n_allowed, ctx)
                     idx = np.asarray(idx, dtype=int)
                     idx = idx[(idx >= 0) & (idx < yb.shape[0])]
                     idx = np.unique(idx)
@@ -172,17 +206,55 @@ class StreamSimulator:
                     self.labels_spent_total += labels_acquired
                     self._ensure_budget().spend(labels_acquired)
 
-                    # ---- 4. update model on labeled samples only -------
-                    if labels_acquired > 0:
-                        Xl = (
-                            Xb.iloc[idx] if isinstance(Xb, pd.DataFrame) else Xb[idx]
-                        )
-                        yl = yb[idx]
-                        if self.adaptation_enabled:
-                            if hasattr(self.model, "partial_fit"):
-                                self.model.partial_fit(Xl, yl)
-                            else:
-                                self.model.fit(Xl, yl)
+                # ---- 4. update detector ---------------------------------
+                alarm = False
+                if self.drift_retrainer is not None:
+                    detector = self.drift_retrainer.detector
+                    if bi >= self.drift_retrainer.warmup_batches:
+                        detector.arm()
+                    if detector.input_signal == "score":
+                        for offset, score in enumerate(y_score):
+                            alarm = detector.update(
+                                float(score), bi, start + offset
+                            ) or alarm
+                    else:
+                        for offset in idx:
+                            error = float(int((y_score[offset] >= 0.5) != yb[offset]))
+                            alarm = detector.update(
+                                error, bi, start + int(offset)
+                            ) or alarm
+                    self.drift_alarms = list(detector.alarms)
+
+                retrain = (
+                    self.drift_retrainer is not None
+                    and self.drift_retrainer.should_retrain(bi)
+                )
+                self.retrain_batches = (
+                    list(self.drift_retrainer.retrain_batches)
+                    if self.drift_retrainer is not None
+                    else []
+                )
+
+                # ---- 5. update model on labeled samples only -------
+                if labels_acquired > 0:
+                    Xl = (
+                        Xb.iloc[idx] if isinstance(Xb, pd.DataFrame) else Xb[idx]
+                    )
+                    yl = yb[idx]
+                    Xl_arr = Xl.to_numpy(dtype=float) if isinstance(Xl, pd.DataFrame) else np.asarray(Xl)
+                    labeled_X_parts.append(Xl_arr)
+                    labeled_y_parts.append(yl)
+                    if self.adaptation_enabled:
+                        if retrain:
+                            X_recent = np.concatenate(labeled_X_parts)
+                            y_recent = np.concatenate(labeled_y_parts)
+                            X_recent = X_recent[-self.drift_retrainer.retrain_window :]
+                            y_recent = y_recent[-self.drift_retrainer.retrain_window :]
+                            self.model.partial_fit(X_recent, y_recent)
+                        elif hasattr(self.model, "partial_fit"):
+                            self.model.partial_fit(Xl, yl)
+                        else:
+                            self.model.fit(Xl, yl)
 
             # ---- record metrics --------------------------------------
             if bi < self.warmup_batches:

@@ -3,9 +3,15 @@
 # One entry point: python -m afd.run --config configs/experiment.yaml
 
 experiment:
-  name: "stage0_smoke_test"
+  name: "stage5_pipeline"
   seed: 42
-  output_dir: "results/stage0_smoke_test"
+  output_dir: "results/stage5_pipeline"
+  sweep:
+    enabled: false
+    drift_types: ["sudden", "gradual"]
+    budgets: [0.01, 0.05, 0.10]
+    strategies: ["random", "uncertainty", "rare_aware"]
+    variants: ["baseline", "adwin", "adwin_al"]
 
 # ----------------------------------------------------------------------
 # Dataset
@@ -17,6 +23,7 @@ dataset:
   path: null                   # path to CSV; required for real sources
   time_column: "TransactionDT" # or "Time" for creditcard
   target_column: "isFraud"
+  seed: 7                    # base seed; each experiment seed derives a paired stream
   # Synthetic generator settings
   n_samples: 100000
   n_features: 30

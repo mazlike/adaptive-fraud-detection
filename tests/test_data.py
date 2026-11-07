@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from afd.data import SyntheticStreamConfig, SyntheticStreamGenerator, fraud_rate
+from afd.metrics import recovery_time
 
 
 def _make_cfg(**kw) -> SyntheticStreamConfig:
@@ -103,3 +104,8 @@ def test_no_shuffling_in_generator() -> None:
     first_vals = X.iloc[0].to_numpy()
     last_vals = X.iloc[-1].to_numpy()
     assert not np.array_equal(first_vals, last_vals)
+
+
+def test_recovery_time_is_post_drift_duration() -> None:
+    series = np.array([0.8, 0.9, 0.2, 0.4, 0.9])
+    assert recovery_time(series, drift_batch=2, level=0.95) == 2

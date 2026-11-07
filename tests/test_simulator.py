@@ -289,3 +289,23 @@ def test_overall_metrics_keys() -> None:
         "n_batches_evaluated",
     ]:
         assert key in m
+
+
+def test_default_active_learning_selector_is_used_when_none_is_provided() -> None:
+    X, y, _ = _make_stream(n_samples=1000)
+    model = BaselineModel(model_type="logistic", class_weight="none")
+    sim = StreamSimulator(
+        model=model,
+        batch_size=250,
+        warmup_batches=1,
+        budget_fraction=0.1,
+        select_labels=None,
+        strategy_context={
+            "strategy": "uncertainty",
+            "uncertainty_measure": "margin",
+            "f1_threshold": 0.5,
+        },
+        seed=7,
+    )
+    sim.run(X, y)
+    assert any(r.labels_acquired > 0 for r in sim.results[sim.warmup_batches :])
